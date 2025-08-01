@@ -67,16 +67,16 @@ class train_callback(pl.Callback):
                 except:
                     pass
                 trainer.my_log.flush()
-                if len(args.wandb) > 0:
-                    print("Login to wandb...")
-                    import wandb
-                    wandb.init(
-                        project=args.wandb,
-                        name=args.run_name + " " + args.my_timestamp,
-                        config=args,
-                        save_code=False,
-                    )
-                    trainer.my_wandb = wandb
+                # if len(args.wandb) > 0:
+                #     print("Login to wandb...")
+                #     import wandb
+                #     wandb.init(
+                #         project=args.wandb,
+                #         name=args.run_name + " " + args.my_timestamp,
+                #         config=args,
+                #         save_code=False,
+                #     )
+                trainer.my_wandb = None
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         args = self.args
@@ -105,7 +105,7 @@ class train_callback(pl.Callback):
                 lll = {"loss": trainer.my_loss, "lr": trainer.my_lr, "wd": trainer.my_wd, "Gtokens": real_step * token_per_step / 1e9}
                 if kt_s > 0:
                     lll["kt/s"] = kt_s
-                trainer.my_wandb.log(lll, step=int(real_step))
+                # trainer.my_wandb.log(lll, step=int(real_step))
 
         if (trainer.is_global_zero) or ('deepspeed_stage_3' in args.strategy): # save pth
             if args.magic_prime > 0:

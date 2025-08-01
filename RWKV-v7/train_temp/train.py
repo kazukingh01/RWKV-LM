@@ -202,6 +202,50 @@ if __name__ == "__main__":
 
     from src.model import RWKV
     model = RWKV(args)
+    ### [S] Custom ###
+    from src.model import L2Wrap
+    from torch.nn import functional as F
+    class CustomRWKV(RWKV):
+        def forward(self, idx):
+            args = self.args
+            x = self.emb(idx)
+            v_first = torch.empty_like(x)
+            for block in self.blocks:
+                if args.grad_cp == 1:
+                    x, v_first = deepspeed.checkpointing.checkpoint(block, x, v_first)
+                else:
+                    x, v_first = block(x, v_first)
+            x = self.ln_out(x)
+            x = self.head(x)  # [16, 512, 4]
+            return x
+        def training_step(self, batch, batch_idx):
+            # print("batch", batch)
+            idx, targets = batch
+            # print("idx", idx.shape)
+            # print("idx", idx)
+            # print("targets", targets.shape)
+            # print("targets", targets)
+            logits = self(idx)  # [16, 1]
+            # print("logits", logits.shape)
+            # print("logits", logits)
+            targets = targets.float().view(-1, 1)  # [16, 1]
+            loss = F.binary_cross_entropy_with_logits(logits, targets)
+            return loss
+    class MyCustomLayer(torch.nn.Module):
+        def __init__(self, input_size, sequence_length):
+            super().__init__()
+            self.l1 = torch.nn.Linear(input_size, 4, bias=True)
+            self.l2 = torch.nn.Linear(sequence_length * 4, 1, bias=False)
+        def forward(self, x):
+            x = self.l1(x)
+            x = x.view(x.size(0), -1)
+            x = self.l2(x)
+            return x
+    model = CustomRWKV(args)
+    model.emb = torch.nn.Linear(128, args.n_embd, bias=True)
+    model.head = MyCustomLayer(768, 512)  # 8 → 4に変更
+    print(model)
+    ### [E] Custom ###
 
     if len(args.load_model) == 0 or args.train_stage == 1:  # shall we build the initial weights?
         init_weight_name = f"{args.proj_dir}/rwkv-init.pth"
@@ -233,7 +277,25 @@ if __name__ == "__main__":
         for k in model.state_dict():
             if k not in load_keys:
                 load_dict[k] = model.state_dict()[k]
-    model.load_state_dict(load_dict)
+    # model.load_state_dict(load_dict)
+
+    ### [S] Custom ###
+    class RandomDataset(torch.utils.data.Dataset):
+        def __init__(self, data_size=1000, feature_size=128):
+            self.data = np.random.rand(data_size, 512, feature_size).astype(np.float32)
+            self.targets = np.random.randint(0, 2, data_size)  # 0 or 1 のバイナリラベル
+        def __len__(self):
+            return len(self.data)
+        def __str__(self):
+            return "MyDataset"
+        def __getitem__(self, idx):
+                return torch.tensor(self.data[idx]), torch.tensor(self.targets[idx])
+    train_data = RandomDataset(1000, 128)
+    data_loader = DataLoader(train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True)
+    print(data_loader)
+    ### [E] Custom ###
+        
+    args.vocab_size = 65536  # 固定値に設定
 
     trainer = Trainer.from_argparse_args(
         args,
@@ -254,7 +316,7 @@ if __name__ == "__main__":
         trainer.strategy.config["zero_optimization"]["reduce_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
 
     # must set shuffle=False, persistent_workers=False (because worker is in another thread)
-    data_loader = DataLoader(train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True)
+    # data_loader = DataLoader(train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True)
 
     if trainer.global_rank == 0:
         print(f'### Preparing for training (loaded {args.load_model}). Please wait...')

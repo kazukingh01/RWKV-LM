@@ -33,7 +33,7 @@ sudo systemctl restart docker
 
 ```bash
 sudo docker pull nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04
-sudo docker run -itd --gpus all --name dev -v /home/share:/home/share nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04 /bin/bash --login
+sudo docker run -itd --gpus all --shm-size=16g --name dev -v /home/share:/home/share nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04 /bin/bash --login
 sudo docker exec -it dev /bin/bash
 ```
 
@@ -86,6 +86,7 @@ cd /home/share/10.git/RWKV-LM/RWKV-v7/train_temp/
 python -m venv venv && source venv/bin/activate
 pip install torch --upgrade --index-url https://download.pytorch.org/whl/cu126
 pip install pytorch-lightning==1.9.5 deepspeed wandb ninja --upgrade
+pip install -r getdata/requirements.txt
 
 mkdir -p data
 wget --continue -O data/minipile.idx https://huggingface.co/datasets/BlinkDL/minipile-tokenized/resolve/main/rwkv_vocab_v20230424/minipile.idx

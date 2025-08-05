@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats, optimize
 import matplotlib.pyplot as plt
+import argparse
 
 # local file
 import env
@@ -81,12 +82,19 @@ def connect_to_mongodb():
     return db
 
 if __name__ == "__main__":
+    # コマンドライン引数の設定
+    parser = argparse.ArgumentParser(description='MongoDBからデータを取得してDataFrameに変換')
+    parser.add_argument('--fr', type=str, required=True, help='開始日 (YYYYMMDD形式)')
+    parser.add_argument('--to', type=str, required=True, help='終了日 (YYYYMMDD形式)')
+    args = parser.parse_args()
+    
+    # YYYYMMDD形式の文字列をdatetimeオブジェクトに変換
+    start_date = datetime.datetime.strptime(args.fr, "%Y%m%d").replace(tzinfo=datetime.timezone.utc)
+    end_date   = datetime.datetime.strptime(args.to, "%Y%m%d").replace(tzinfo=datetime.timezone.utc)
+    list_symbols = [119,122,123,124,125,126,127,128,129,130,131,132,133,134,135]
+    
     db = connect_to_mongodb()
     print(db)
-
-    list_symbols = [119,122,123,124,125,126,127,128,129,130,131,132,133,134,135]
-    start_date = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
-    end_date   = datetime.datetime(2025, 1, 3, tzinfo=datetime.timezone.utc)
     
     # Get candles
     collection = db.get_collection("candles_10s")
@@ -187,7 +195,6 @@ if __name__ == "__main__":
         fit = fit_skewt(ndf)
         plot_hist_with_fit(ndf, fit, symbol, bins=500)
         bins = np.quantile(ndf, [0.0, 0.1, 0.3, 0.7, 0.9, 1.0])
-        np.savetxt(f"bins_{symbol}.csv", bins, delimiter=",")
         bins[0]  = float("-inf")
         bins[-1] = float("inf")
         df_base = pd.concat([df_base, pd.cut(df_base[f"gt_min_{symbol}"], bins=bins, labels=[0,1,2,3,4], right=False).rename(f"gt_min_label_{symbol}")], axis=1)

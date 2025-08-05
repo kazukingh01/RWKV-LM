@@ -2,6 +2,8 @@
 # The RWKV Language Model - https://github.com/BlinkDL/RWKV-LM
 ########################################################################################################
 
+import pandas as pd
+import numpy as np
 import logging
 logging.basicConfig(level=logging.INFO)
 
@@ -218,33 +220,27 @@ if __name__ == "__main__":
             x = self.ln_out(x)
             x = self.head(x)  # [16, 512, 4]
             return x
-        def training_step(self, batch, batch_idx):
-            # print("batch", batch)
-            idx, targets = batch
-            # print("idx", idx.shape)
-            # print("idx", idx)
-            # print("targets", targets.shape)
-            # print("targets", targets)
-            logits = self(idx)  # [16, 1]
-            # print("logits", logits.shape)
-            # print("logits", logits)
-            targets = targets.float().view(-1, 1)  # [16, 1]
-            loss = F.binary_cross_entropy_with_logits(logits, targets)
-            return loss
-    class MyCustomLayer(torch.nn.Module):
-        def __init__(self, input_size, sequence_length):
-            super().__init__()
-            self.l1 = torch.nn.Linear(input_size, 4, bias=True)
-            self.l2 = torch.nn.Linear(sequence_length * 4, 1, bias=False)
-        def forward(self, x):
-            x = self.l1(x)
-            x = x.view(x.size(0), -1)
-            x = self.l2(x)
-            return x
+        def training_step(self, batch, _):
+            data, targets = batch
+            # print(data.shape)
+            # print(data)
+            # print(targets.shape)
+            # print(targets)
+            logits = self(data)  # [batch_size, num_classes]
+            # print(logits.shape)
+            # print(logits)
+            batch_size, n_task = targets.shape
+            n_label = logits.shape[-1] // n_task
+            total_loss = 0
+            for task_idx in range(n_task):
+                task_target = targets[:, task_idx]  # [batch_size]
+                task_logit  = logits[:, task_idx * n_label:(task_idx + 1) * n_label]  # [batch_size, num_classes]
+                task_loss   = F.cross_entropy(task_logit, task_target)
+                total_loss += task_loss
+            return total_loss / n_task
+    args.epoch_count = 100
+    args.epoch_steps = 100
     model = CustomRWKV(args)
-    model.emb = torch.nn.Linear(128, args.n_embd, bias=True)
-    model.head = MyCustomLayer(768, 512)  # 8 → 4に変更
-    print(model)
     ### [E] Custom ###
 
     if len(args.load_model) == 0 or args.train_stage == 1:  # shall we build the initial weights?
@@ -280,19 +276,55 @@ if __name__ == "__main__":
     # model.load_state_dict(load_dict)
 
     ### [S] Custom ###
-    class RandomDataset(torch.utils.data.Dataset):
-        def __init__(self, data_size=1000, feature_size=128):
-            self.data = np.random.rand(data_size, 512, feature_size).astype(np.float32)
-            self.targets = np.random.randint(0, 2, data_size)  # 0 or 1 のバイナリラベル
+    class MyDataset(torch.utils.data.Dataset):
+        def __init__(self, csvfile: str, seq_len=512):
+            df = pd.read_csv(csvfile).sort_values(by='timestamp', ascending=True)
+            self.seq_len   = seq_len
+            self.timestamp = df["timestamp"].to_numpy()
+            self.cols_data = df.columns[1:np.where(df.columns.str.contains("^gt_"))[0].min()].tolist()
+            self.cols_gt   = df.columns[df.columns.str.contains("^gt_(?:min|max)_label_[0-9]+", regex=True)].tolist()
+            self.data      = df[self.cols_data].to_numpy().astype(np.float32)
+            self.gt        = df[self.cols_gt].to_numpy().astype(np.int64)
+            self.indexes   = np.arange(seq_len, len(self.data), seq_len // 8)
         def __len__(self):
-            return len(self.data)
+            return len(self.indexes)
         def __str__(self):
             return "MyDataset"
-        def __getitem__(self, idx):
-                return torch.tensor(self.data[idx]), torch.tensor(self.targets[idx])
-    train_data = RandomDataset(1000, 128)
+        def __getitem__(self, idx: int):
+            _idx = self.indexes[idx]
+            return torch.tensor(self.data[_idx - self.seq_len:_idx]), torch.tensor(self.gt[_idx])
+    train_data = MyDataset("getdata/data.csv", seq_len=512)
     data_loader = DataLoader(train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True)
     print(data_loader)
+    class CustomEmbLayer(torch.nn.Module):
+        def __init__(self, input_dim: int, seq_len: int, output_dim: int):
+            super().__init__()
+            self.input_dim  = input_dim
+            self.output_dim = output_dim
+            self.batch_norm = torch.nn.BatchNorm1d(input_dim)
+            self.layer_norm = torch.nn.LayerNorm(seq_len, elementwise_affine=False)
+            self.linear     = torch.nn.Linear(input_dim * 2, output_dim, bias=True)
+        def forward(self, input: torch.Tensor):
+            outputA = self.layer_norm(input.permute(0, 2, 1)).permute(0, 2, 1)
+            outputB = self.batch_norm(input.permute(0, 2, 1)).permute(0, 2, 1)
+            output  = torch.cat([outputA, outputB], dim=-1)
+            output  = self.linear(output)
+            return output
+    class CustomHeadLayer(torch.nn.Module):
+        def __init__(self, input_size, seq_len: int, n_symbols: int, num_classes: int=5):
+            super().__init__()
+            self.l1  = torch.nn.Linear(input_size, n_symbols, bias=True)
+            self.act = torch.nn.ReLU()
+            self.l2  = torch.nn.Linear(seq_len * n_symbols, n_symbols * num_classes, bias=False)
+        def forward(self, x):
+            x = self.l1(x)
+            x = self.act(x)
+            x = x.view(x.size(0), -1)
+            x = self.l2(x)
+            return x
+    model.emb  = CustomEmbLayer(len(train_data.cols_data), train_data.seq_len, args.n_embd)
+    model.head = CustomHeadLayer(args.n_embd, train_data.seq_len, len(train_data.cols_gt), num_classes=5)  # 5クラス分類用
+    print(model)
     ### [E] Custom ###
         
     args.vocab_size = 65536  # 固定値に設定

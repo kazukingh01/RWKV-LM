@@ -116,6 +116,8 @@ class train_callback(pl.Callback):
                         to_save_dict,
                         f"{args.proj_dir}/rwkv-final.pth",
                     )
+        
+        self._show_inference_results(trainer, pl_module, is_show=False)
                 
 
     def on_train_epoch_start(self, trainer, pl_module):
@@ -125,7 +127,7 @@ class train_callback(pl.Callback):
         dataset.global_rank = trainer.global_rank
         dataset.real_epoch = int(args.epoch_begin + trainer.current_epoch)
         dataset.world_size = trainer.world_size
-        # print(f'########## world_size {dataset.world_size} global_rank {dataset.global_rank} real_epoch {dataset.real_epoch} ##########')
+        print(f'########## world_size {dataset.world_size} global_rank {dataset.global_rank} real_epoch {dataset.real_epoch} ##########')
 
     def on_train_epoch_end(self, trainer, pl_module):
         args = self.args
@@ -154,6 +156,35 @@ class train_callback(pl.Callback):
 
             trainer.my_loss_sum = 0
             trainer.my_loss_count = 0
+
+        self._show_inference_results(trainer, pl_module, is_show=True)
+
+    def _show_inference_results(self, trainer, pl_module, is_show=False):
+        dataloader = trainer.train_dataloader
+        sample_batch = next(iter(dataloader))
+        data, targets = sample_batch
+        targets = targets.to("cuda")
+        pl_module.eval()
+        with torch.no_grad():
+            logits = pl_module(data.to("cuda").to(torch.bfloat16))
+            predictions = logits.reshape(logits.shape[0], -1, 5).argmax(dim=-1)
+            accuracy = (targets == predictions).sum() / predictions.numel()
+            rmse     = ((targets - predictions) ** 2).sum() / predictions.numel()
+            benc1    = (targets == 2).sum() / predictions.numel()
+            benc2    = ((targets - 2) ** 2).sum() / predictions.numel()
+            if is_show:
+                print("=== logits ===", logits.shape)
+                print(logits)
+                print("=== predictions ===", predictions.shape)
+                print(predictions)
+                print("=== targets ===", targets.shape)
+                print(targets)
+            print(f"acc:  {accuracy:.4f}")
+            print(f"benc: {benc1:.4f}")
+            print(f"rmse: {rmse:.4f}")
+            print(f"benc: {benc2:.4f}")
+        pl_module.train()  # 訓練モードに戻す
+
 
 @rank_zero_only
 def generate_init_weight(model, init_weight_name):
